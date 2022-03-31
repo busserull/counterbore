@@ -28,7 +28,25 @@ fn read_cbor() -> Vec<u8> {
 }
 
 #[derive(Debug)]
+enum ElementSemanticType {
+    Unsigned,
+    Negative,
+    ByteString,
+    TextString,
+    Array,
+    Map,
+    Tag,
+    True,
+    False,
+    Null,
+    Undefined,
+    Float,
+}
+
+#[derive(Debug)]
 struct Element {
+    semantic: ElementSemanticType,
+
     major: u8,
     argument: usize,
 
@@ -79,7 +97,26 @@ impl Element {
                 children.push(child);
             }
 
+            let semantic = match (major, argument) {
+                (0, _) => ElementSemanticType::Unsigned,
+                (1, _) => ElementSemanticType::Negative,
+                (2, _) => ElementSemanticType::ByteString,
+                (3, _) => ElementSemanticType::TextString,
+                (4, _) => ElementSemanticType::Array,
+                (5, _) => ElementSemanticType::Map,
+                (6, _) => ElementSemanticType::Tag,
+                (7, 20) => ElementSemanticType::False,
+                (7, 21) => ElementSemanticType::True,
+                (7, 22) => ElementSemanticType::Null,
+                (7, 23) => ElementSemanticType::Undefined,
+                (7, 31) => return Err(ParseError::UnsupportedIndefiniteLength),
+                (7, _) => ElementSemanticType::Float,
+                _ => return Err(ParseError::MalformedInput),
+            };
+
             Ok(Self {
+                semantic,
+
                 major,
                 argument,
 
@@ -161,6 +198,7 @@ enum ParseError {
     NotEnoughBytes,
     ReservedArgument(usize),
     UnsupportedIndefiniteLength,
+    MalformedInput,
 }
 
 fn main() {
@@ -169,4 +207,6 @@ fn main() {
     let root = Element::from_cbor(&cbor, 0).unwrap();
 
     root.put(0);
+
+    println!("Root size: {}", root.size());
 }
