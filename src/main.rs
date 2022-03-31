@@ -41,7 +41,7 @@ struct Element {
 }
 
 impl Element {
-    fn from_cbor(cbor: &[u8]) -> Result<Self, ParseError> {
+    fn from_cbor(cbor: &[u8], start: usize) -> Result<Self, ParseError> {
         if let Some(byte) = cbor.first() {
             let major = byte >> 5;
 
@@ -53,14 +53,15 @@ impl Element {
                 26 => 4,
                 27 => 8,
                 31 => return Err(ParseError::UnsupportedIndefiniteLength),
-                _ => return Err(ParseError::ReservedArgument),
+                _ => return Err(ParseError::ReservedArgument(start)),
             };
             let argument = match argument_size {
                 0 => argument,
                 size => parse_big_endian(&cbor[1..], size)?,
             };
 
-            let (byte_count, child_count) = match major {
+            let header_byte_count = 1 + argument_size;
+            let (body_byte_count, child_count) = match major {
                 2 | 3 => (argument, 0),
                 4 => (0, argument),
                 5 => (0, 2 * argument),
@@ -68,22 +69,67 @@ impl Element {
                 _ => (0, 0),
             };
 
-            let bytes = parse_bytes(&cbor[(1 + argument_size)..], byte_count)?;
+            let bytes = parse_bytes(&cbor[header_byte_count..], body_byte_count)?;
+
+            let mut children = Vec::with_capacity(child_count);
+            let mut child_offset = header_byte_count + body_byte_count;
+            for _ in 0..child_count {
+                let child = Element::from_cbor(&cbor[child_offset..], start + child_offset)?;
+                child_offset += child.size();
+                children.push(child);
+            }
 
             Ok(Self {
                 major,
                 argument,
 
-                start: 0,
-                header_byte_count: 1 + argument_size,
-                body_byte_count: byte_count,
+                start,
+                header_byte_count,
+                body_byte_count,
 
                 bytes,
-                children: Vec::new(),
+                children,
             })
         } else {
             Err(ParseError::NotEnoughBytes)
         }
+    }
+
+    fn size(&self) -> usize {
+        self.children.iter().fold(
+            self.header_byte_count + self.body_byte_count,
+            |acc, child| acc + child.size(),
+        )
+    }
+
+    fn put(&self, indent: usize) {
+        for _ in 0..indent {
+            print!("    ");
+        }
+
+        println!("{}", self);
+
+        for child in &self.children {
+            child.put(indent + 1);
+        }
+    }
+}
+
+impl std::fmt::Display for Element {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let type_line = match self.major {
+            0 => format!("{}", self.argument),
+            1 => format!("-{}", self.argument + 1),
+            2 => format!("<<{}>>", self.argument),
+            3 => String::from(String::from_utf8_lossy(&self.bytes)),
+            4 => format!("[{}]", self.argument),
+            5 => format!("{}{}{}", "{", self.argument, "}"),
+            6 => format!("{}()", self.argument),
+            7 => format!("m{}", self.argument),
+            _ => panic!("Invalid major type"),
+        };
+
+        write!(f, "{} @{}", type_line, self.start)
     }
 }
 
@@ -113,22 +159,14 @@ fn parse_bytes(bytes: &[u8], size: usize) -> Result<Vec<u8>, ParseError> {
 enum ParseError {
     TooManyBytes,
     NotEnoughBytes,
-    ReservedArgument,
+    ReservedArgument(usize),
     UnsupportedIndefiniteLength,
 }
 
 fn main() {
     let cbor = read_cbor();
 
-    let mut i = 0;
-    while i < cbor.len() {
-        let element = Element::from_cbor(&cbor[i..]);
+    let root = Element::from_cbor(&cbor, 0).unwrap();
 
-        if element.is_ok() {
-            i += element.as_ref().unwrap().header_byte_count
-                + element.as_ref().unwrap().body_byte_count;
-        }
-
-        println!("{:?}", element);
-    }
+    root.put(0);
 }
