@@ -43,6 +43,14 @@ fn read_suit() -> Vec<u8> {
     ]
 }
 
+fn read_test() -> Vec<u8> {
+    vec![
+        0xc6, 0x83, 0x45, 0xd0, 0x83, 0x01, 0x02, 0x22, 0xd8, 0x38, 0x57, 0xa2, 0x13, 0x49, 0xa2,
+        0x05, 0x06, 0x07, 0x81, 0x43, 0x66, 0x78, 0x98, 0x12, 0x69, 0x50, 0x61, 0x72, 0x73, 0x65,
+        0x72, 0x20, 0x3c, 0x33, 0x47, 0xaa, 0xcc, 0xbb, 0xff, 0xee, 0xdd, 0x00,
+    ]
+}
+
 #[derive(Debug, PartialEq)]
 enum ElementSemanticType {
     Unsigned,
@@ -148,14 +156,14 @@ impl Element {
         }
     }
 
-    fn byte_string_locations(&self) -> Vec<usize> {
-        let initial = match self.semantic {
-            ElementSemanticType::ByteString => vec![self.start],
+    fn byte_strings(&self) -> Vec<&Element> {
+        let initial: Vec<&Element> = match self.semantic {
+            ElementSemanticType::ByteString => vec![&self],
             _ => Vec::new(),
         };
 
-        self.children.iter().fold(initial, move |mut acc, child| {
-            acc.extend_from_slice(&child.byte_string_locations());
+        self.children.iter().fold(initial, |mut acc, child| {
+            acc.extend_from_slice(&child.byte_strings());
             acc
         })
     }
@@ -231,7 +239,7 @@ enum ParseError {
 
 fn main() {
     // let cbor = read_cbor();
-    let cbor = read_suit();
+    let cbor = read_test();
 
     let root = Element::from_cbor(&cbor, 0).unwrap();
 
@@ -239,5 +247,19 @@ fn main() {
 
     println!("Root size: {}", root.size());
 
-    println!("{:?}", root.byte_string_locations());
+    for child in root.byte_strings() {
+        println!("Child at {}", child.start);
+        match Element::from_cbor(&child.bytes, child.start) {
+            Ok(element) => element.put(1),
+            Err(_) => (),
+        }
+    }
+
+    println!(
+        "{:?}",
+        root.byte_strings()
+            .iter()
+            .map(|x| x.start)
+            .collect::<Vec<usize>>()
+    );
 }
