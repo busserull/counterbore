@@ -45,9 +45,10 @@ fn read_suit() -> Vec<u8> {
 
 fn read_test() -> Vec<u8> {
     vec![
-        0xc6, 0x83, 0x45, 0xd0, 0x83, 0x01, 0x02, 0x22, 0xd8, 0x38, 0x57, 0xa2, 0x13, 0x49, 0xa2,
+        0xc6, 0x84, 0x45, 0xd0, 0x83, 0x01, 0x02, 0x22, 0xd8, 0x38, 0x57, 0xa2, 0x13, 0x49, 0xa2,
         0x05, 0x06, 0x07, 0x81, 0x43, 0x66, 0x78, 0x98, 0x12, 0x69, 0x50, 0x61, 0x72, 0x73, 0x65,
-        0x72, 0x20, 0x3c, 0x33, 0x47, 0xaa, 0xcc, 0xbb, 0xff, 0xee, 0xdd, 0x00,
+        0x72, 0x20, 0x3c, 0x33, 0x47, 0xaa, 0xcc, 0xbb, 0xff, 0xee, 0xdd, 0x00, 0xfb, 0x3f, 0xf1,
+        0x13, 0xdd, 0x97, 0xf6, 0x2b, 0x6b,
     ]
 }
 
@@ -176,14 +177,53 @@ impl Element {
     }
 
     fn put(&self, indent: usize) {
-        for _ in 0..indent {
-            print!("    ");
+        fn nudge(indent: usize) {
+            for _ in 0..indent {
+                print!("    ");
+            }
         }
 
-        println!("{}", self);
+        use ElementSemanticType::*;
+
+        nudge(indent);
+
+        match self.semantic {
+            Unsigned => println!("{}", self.argument),
+            Negative => println!("-{}", self.argument + 1),
+            ByteString => println!(
+                "<< {}..{} >>",
+                self.bytes.first().unwrap(),
+                self.bytes.last().unwrap()
+            ),
+            TextString => println!("\"{}\"", String::from(String::from_utf8_lossy(&self.bytes))),
+            Array => println!("["),
+            Map => println!("{{"),
+            Tag => println!("{}(", self.argument),
+            True => println!("true"),
+            False => println!("false"),
+            Null => println!("null"),
+            Undefined => println!("undefined"),
+            Float => println!("Float: {}", self.argument),
+        }
 
         for child in &self.children {
             child.put(indent + 1);
+        }
+
+        match self.semantic {
+            Array => {
+                nudge(indent);
+                println!("]")
+            }
+            Map => {
+                nudge(indent);
+                println!("}}")
+            }
+            Tag => {
+                nudge(indent);
+                println!(")")
+            }
+            _ => (),
         }
     }
 }
