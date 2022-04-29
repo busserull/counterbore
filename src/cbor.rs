@@ -6,7 +6,7 @@ pub struct Cbor<'a> {
 
     start: usize,
     head_byte_count: usize,
-    body_byte_count: usize,
+    tail_byte_count: usize,
 
     body_bytes: &'a [u8],
     children: Vec<Cbor<'a>>,
@@ -16,9 +16,11 @@ pub struct Cbor<'a> {
 pub enum ParseError {
     // Problem byte followed by ...
     // TooManyBytes(usize),
-    TooFewBytes(usize, usize), // ... byte count lacking
+    TooFewBytes(usize, usize),         // ... byte count lacking
     ReservedAdditionalInfo(usize, u8), // ... reserved info value
-                               // MalformedInput(usize),
+    // MalformedInput(usize),
+    IllegalIndefiniteLength(usize),
+    BreakSymbol(usize),
 }
 
 impl<'a> Cbor<'a> {
@@ -28,8 +30,9 @@ impl<'a> Cbor<'a> {
 
     pub fn size(&self) -> usize {
         self.head_byte_count
-            + self.body_byte_count
+            + self.body_bytes.len()
             + self.children.iter().fold(0, |acc, c| acc + c.size())
+            + self.tail_byte_count
     }
 
     pub fn semantic(&self) -> (String, &Vec<Cbor<'a>>) {
@@ -38,8 +41,8 @@ impl<'a> Cbor<'a> {
             (1, value) => format!("-{}", value + 1),
             (2, _) => format!("<<{:?}>>", self.body_bytes),
             (3, _) => String::from_utf8_lossy(self.body_bytes).into_owned(),
-            (4, children) => format!("[{}]", children),
-            (5, pairs) => format!("{{{}}}", pairs),
+            (4, _) => format!("[{}]", self.children.len()),
+            (5, _) => format!("{{{}}}", self.children.len()),
             (6, value) => format!("({})", value),
             (7, 24..=27) => String::from("Float"),
             (7, 20) => String::from("false"),
@@ -73,6 +76,16 @@ impl<'a> Cbor<'a> {
             _ => return Err(ParseError::ReservedAdditionalInfo(start, additional_info)),
         };
 
+        let indefinite_length = (additional_info == 31);
+
+        if indefinite_length {
+            match major {
+                0 | 1 | 6 => return Err(ParseError::IllegalIndefiniteLength(start)),
+                7 => return Err(ParseError::BreakSymbol(start)),
+                _ => (),
+            }
+        }
+
         let argument = if argument_byte_count == 0 {
             additional_info as usize
         } else {
@@ -100,11 +113,27 @@ impl<'a> Cbor<'a> {
 
         let mut children = Vec::with_capacity(child_count);
         let mut child_offset = head_byte_count + body_byte_count;
-        for _ in 0..child_count {
-            let child = Cbor::cbor_from_bytes(&bytes[child_offset..], start + child_offset)?;
-            child_offset += child.size();
-            children.push(child);
+
+        if indefinite_length {
+            while true {
+                match Cbor::cbor_from_bytes(&bytes[child_offset..], start + child_offset) {
+                    Ok(child) => {
+                        child_offset += child.size();
+                        children.push(child);
+                    }
+                    Err(ParseError::BreakSymbol(_)) => break,
+                    error => return error,
+                }
+            }
+        } else {
+            for _ in 0..child_count {
+                let child = Cbor::cbor_from_bytes(&bytes[child_offset..], start + child_offset)?;
+                child_offset += child.size();
+                children.push(child);
+            }
         }
+
+        let tail_byte_count = if indefinite_length { 1 } else { 0 };
 
         Ok(Self {
             major,
@@ -113,7 +142,7 @@ impl<'a> Cbor<'a> {
 
             start,
             head_byte_count,
-            body_byte_count,
+            tail_byte_count,
 
             body_bytes,
             children,
