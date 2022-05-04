@@ -1,4 +1,6 @@
 mod cbor;
+mod cddl;
+mod schema_type;
 
 fn read_cbor() -> Vec<u8> {
     vec![
@@ -249,14 +251,9 @@ fn put<'a>(c: &'a cbor::Cbor, indent: usize) {
 }
 
 fn main() {
-    // let bytes = [0x83, 0x01, 0x02, 0x03];
-    let bytes = read_cbor();
-
     let bytes = [0x9f, 0x01, 0x9f, 0x02, 0x03, 0x04, 0xff, 0x05, 0xff];
 
     let c = cbor::Cbor::from_bytes(&bytes).unwrap();
 
     put(&c, 0);
-
-    println!("{:#?}", c);
 }

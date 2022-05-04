@@ -13,19 +13,38 @@ pub struct Cbor<'a> {
 }
 
 #[derive(Debug)]
+pub enum CborType {
+    Uint,
+    Nint,
+    Bstr,
+    Tstr,
+    Array,
+    Map,
+    Tag,
+    Bool,
+    Null,
+    Undefined,
+    Float,
+    Simple,
+}
+
+#[derive(Debug)]
 pub enum ParseError {
-    // Problem byte followed by ...
-    // TooManyBytes(usize),
-    TooFewBytes(usize, usize),         // ... byte count lacking
-    ReservedAdditionalInfo(usize, u8), // ... reserved info value
-    // MalformedInput(usize),
-    IllegalIndefiniteLength(usize),
-    BreakSymbol(usize),
+    TooManyBytes(usize),               // number of bytes
+    TooFewBytes(usize, usize),         // start offset, number of bytes
+    ReservedAdditionalInfo(usize, u8), // start offset, additional info
+    IllegalIndefiniteLength(usize),    // start offset
+    BreakSymbol(usize),                // start offset
 }
 
 impl<'a> Cbor<'a> {
     pub fn from_bytes(bytes: &'a [u8]) -> Result<Self, ParseError> {
-        Cbor::cbor_from_bytes(bytes, 0)
+        let result = Cbor::cbor_from_bytes(bytes, 0)?;
+
+        match bytes.len() - result.size() {
+            0 => Ok(result),
+            trailing_bytes => Err(ParseError::TooManyBytes(trailing_bytes)),
+        }
     }
 
     pub fn size(&self) -> usize {
@@ -35,6 +54,31 @@ impl<'a> Cbor<'a> {
             + self.tail_byte_count
     }
 
+    pub fn get_type(&self) -> CborType {
+        use CborType::*;
+
+        match self.major {
+            0 => Uint,
+            1 => Nint,
+            2 => Bstr,
+            3 => Tstr,
+            4 => Array,
+            5 => Map,
+            6 => Tag,
+            7 => match self.additional_info {
+                0..=23 => Simple,
+                20 | 21 => Bool,
+                22 => Null,
+                23 => Undefined,
+                24 => Simple,
+                25..=27 => Float,
+                e => panic!("Uncaught malformed major type 7 encoding, info: {}", e),
+            },
+            e => panic!("Uncaught malformed major type, major: {}", e),
+        }
+    }
+
+    /*
     pub fn semantic(&self) -> (String, &Vec<Cbor<'a>>) {
         let description = match (self.major, self.argument) {
             (0, value) => format!("{}", value),
@@ -55,6 +99,56 @@ impl<'a> Cbor<'a> {
 
         (description, &self.children)
     }
+    */
+
+    /*
+    fn describe(&self, indent_level: usize) -> Vec<String> {
+        let head = match self.major {
+            0 => format!("{}", self.argument),
+            1 => format!("-{}", self.argument + 1),
+            2 => format!("<<{:?}>>", self.body_bytes),
+            3 => String::from_utf8_lossy(self.body_bytes).into_owned(),
+            4 => String::from("[\n"),
+            5 => String::from("{\n"),
+            6 => format!("{}(\n", self.argument),
+            7 => match self.additional_info {
+                0..=19 => format!("s{}", self.additional_info),
+                20 => String::from("false"),
+                21 => String::from("true"),
+                22 => String::from("null"),
+                23 => String::from("undefined"),
+                24 => format!("s{}", self.argument),
+                25 => format!("{}", parse_float(self.argument, 2)),
+                26 => format!("{}", parse_float(self.argument, 4)),
+                27 => format!("{}", parse_float(self.argument, 8)),
+                31 => String::from("break"),
+                e => panic!("Uncaught malformed major type 7 encoding, info: {}", e),
+            },
+            e => panic!("Uncaught malformed major type, major: {}", e),
+        };
+
+        let tail = match self.major {
+            4 => String::from("\n]"),
+            5 => String::from("\n}"),
+            6 => String::from("\n)"),
+            _ => String::from("\n"),
+        };
+
+        let mut pieces = Vec::new();
+
+        pieces.push(String::from("    ").repeat(indent_level));
+        pieces.push(head);
+
+        for child in &self.children {
+            pieces.extend(child.describe(indent_level + 1));
+        }
+
+        pieces.push(String::from("    ").repeat(indent_level));
+        pieces.push(tail);
+
+        pieces
+    }
+    */
 
     fn cbor_from_bytes(bytes: &'a [u8], start: usize) -> Result<Self, ParseError> {
         if bytes.first().is_none() {
@@ -76,7 +170,7 @@ impl<'a> Cbor<'a> {
             _ => return Err(ParseError::ReservedAdditionalInfo(start, additional_info)),
         };
 
-        let indefinite_length = (additional_info == 31);
+        let indefinite_length = additional_info == 31;
 
         if indefinite_length {
             match major {
@@ -115,7 +209,7 @@ impl<'a> Cbor<'a> {
         let mut child_offset = head_byte_count + body_byte_count;
 
         if indefinite_length {
-            while true {
+            loop {
                 match Cbor::cbor_from_bytes(&bytes[child_offset..], start + child_offset) {
                     Ok(child) => {
                         child_offset += child.size();
@@ -150,6 +244,14 @@ impl<'a> Cbor<'a> {
     }
 }
 
+/*
+impl<'a> std::fmt::Display for Cbor<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.describe(0).join(""))
+    }
+}
+*/
+
 fn parse_big_endian(bytes: &[u8], size: usize) -> Result<usize, usize> {
     if size > bytes.len() {
         return Err(size - bytes.len());
@@ -163,3 +265,14 @@ fn parse_big_endian(bytes: &[u8], size: usize) -> Result<usize, usize> {
 
     Ok(result)
 }
+
+/*
+fn parse_float(bits: usize, byte_count: usize) -> f64 {
+    match byte_count {
+        2 => 0.0,
+        4 => 0.0,
+        8 => f64::from_bits(bits as u64),
+        e => panic!("Parse float with unsupported byte count: {}", e),
+    }
+}
+*/
