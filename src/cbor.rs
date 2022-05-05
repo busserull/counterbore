@@ -1,3 +1,5 @@
+const INDENT_MARKER: &'static str = "    ";
+
 #[derive(Debug)]
 pub struct Cbor<'a> {
     major: u8,
@@ -13,7 +15,15 @@ pub struct Cbor<'a> {
 }
 
 #[derive(Debug)]
-pub enum CborType {
+pub enum ParseError {
+    TooManyBytes(usize),               // number of bytes
+    TooFewBytes(usize, usize),         // start offset, number of bytes
+    ReservedAdditionalInfo(usize, u8), // start offset, additional info
+    IllegalIndefiniteLength(usize),    // start offset
+    BreakSymbol(usize),                // start offset
+}
+
+enum CborType {
     Uint,
     Nint,
     Bstr,
@@ -21,20 +31,12 @@ pub enum CborType {
     Array,
     Map,
     Tag,
-    Bool,
+    True,
+    False,
     Null,
     Undefined,
     Float,
     Simple,
-}
-
-#[derive(Debug)]
-pub enum ParseError {
-    TooManyBytes(usize),               // number of bytes
-    TooFewBytes(usize, usize),         // start offset, number of bytes
-    ReservedAdditionalInfo(usize, u8), // start offset, additional info
-    IllegalIndefiniteLength(usize),    // start offset
-    BreakSymbol(usize),                // start offset
 }
 
 impl<'a> Cbor<'a> {
@@ -47,14 +49,14 @@ impl<'a> Cbor<'a> {
         }
     }
 
-    pub fn size(&self) -> usize {
+    fn size(&self) -> usize {
         self.head_byte_count
             + self.body_bytes.len()
             + self.children.iter().fold(0, |acc, c| acc + c.size())
             + self.tail_byte_count
     }
 
-    pub fn get_type(&self) -> CborType {
+    fn get_type(&self) -> CborType {
         use CborType::*;
 
         match self.major {
@@ -66,8 +68,9 @@ impl<'a> Cbor<'a> {
             5 => Map,
             6 => Tag,
             7 => match self.additional_info {
-                0..=23 => Simple,
-                20 | 21 => Bool,
+                0..=19 => Simple,
+                20 => False,
+                21 => True,
                 22 => Null,
                 23 => Undefined,
                 24 => Simple,
@@ -78,77 +81,99 @@ impl<'a> Cbor<'a> {
         }
     }
 
-    /*
-    pub fn semantic(&self) -> (String, &Vec<Cbor<'a>>) {
-        let description = match (self.major, self.argument) {
-            (0, value) => format!("{}", value),
-            (1, value) => format!("-{}", value + 1),
-            (2, _) => format!("<<{:?}>>", self.body_bytes),
-            (3, _) => String::from_utf8_lossy(self.body_bytes).into_owned(),
-            (4, _) => format!("[{}]", self.children.len()),
-            (5, _) => format!("{{{}}}", self.children.len()),
-            (6, value) => format!("({})", value),
-            (7, 24..=27) => String::from("Float"),
-            (7, 20) => String::from("false"),
-            (7, 21) => String::from("true"),
-            (7, 22) => String::from("null"),
-            (7, 23) => String::from("undefined"),
-            (7, 31) => String::from("Break"),
-            _ => String::from("Unknown"),
+    fn format(&self, indent_level: usize) -> Vec<String> {
+        use CborType::*;
+        let cbor_type = self.get_type();
+
+        let indent = INDENT_MARKER.to_string().repeat(indent_level);
+
+        let head = match cbor_type {
+            Uint => format!("{}", self.argument),
+            Nint => format!("-{}", self.argument + 1),
+            Bstr => "<<".to_string(),
+            Tstr => format!("\"{}", String::from_utf8_lossy(self.body_bytes)),
+            Array => "[\n".to_string(),
+            Map => "{\n".to_string(),
+            Tag => format!("{}(\n", self.argument),
+            Simple => format!("simple {}", self.argument),
+            True => "true".to_string(),
+            False => "false".to_string(),
+            Null => "null".to_string(),
+            Undefined => "undefined".to_string(),
+            Float => String::from("Float (representation unimplemented)"),
         };
 
-        (description, &self.children)
-    }
-    */
+        let tail = match cbor_type {
+            Bstr => format!("{}>>", indent),
+            Tstr => String::from("\""),
+            Array => format!("{}]", indent),
+            Map => format!("{}}}", indent),
+            Tag => format!("{})", indent),
+            _ => String::from(""),
+        };
 
-    /*
-    fn describe(&self, indent_level: usize) -> Vec<String> {
-        let head = match self.major {
-            0 => format!("{}", self.argument),
-            1 => format!("-{}", self.argument + 1),
-            2 => format!("<<{:?}>>", self.body_bytes),
-            3 => String::from_utf8_lossy(self.body_bytes).into_owned(),
-            4 => String::from("[\n"),
-            5 => String::from("{\n"),
-            6 => format!("{}(\n", self.argument),
-            7 => match self.additional_info {
-                0..=19 => format!("s{}", self.additional_info),
-                20 => String::from("false"),
-                21 => String::from("true"),
-                22 => String::from("null"),
-                23 => String::from("undefined"),
-                24 => format!("s{}", self.argument),
-                25 => format!("{}", parse_float(self.argument, 2)),
-                26 => format!("{}", parse_float(self.argument, 4)),
-                27 => format!("{}", parse_float(self.argument, 8)),
-                31 => String::from("break"),
-                e => panic!("Uncaught malformed major type 7 encoding, info: {}", e),
+        let mut fragments = vec![indent, head];
+
+        match cbor_type {
+            Bstr => match Cbor::from_bytes(self.body_bytes) {
+                Ok(cbor) => {
+                    fragments.push(" expands to:\n".to_string());
+                    fragments.extend(cbor.format(indent_level + 1));
+                    fragments.push("\n".to_string());
+                }
+                Err(_) => {
+                    fragments.push("\n".to_string());
+                    for chunk in self.body_bytes.chunks(16) {
+                        fragments.push(INDENT_MARKER.to_string().repeat(indent_level + 1));
+                        for byte in chunk {
+                            fragments.push(format!("{:02x}, ", byte));
+                        }
+                        fragments.push("\n".to_string());
+                    }
+                }
             },
-            e => panic!("Uncaught malformed major type, major: {}", e),
-        };
 
-        let tail = match self.major {
-            4 => String::from("\n]"),
-            5 => String::from("\n}"),
-            6 => String::from("\n)"),
-            _ => String::from("\n"),
-        };
+            Array => {
+                for child in self.children.iter() {
+                    fragments.extend(child.format(indent_level + 1));
+                    fragments.push(",\n".to_string());
+                }
+            }
 
-        let mut pieces = Vec::new();
+            Map => {
+                for pair in self.children.chunks_exact(2) {
+                    let key = &pair[0];
+                    let value = &pair[1];
 
-        pieces.push(String::from("    ").repeat(indent_level));
-        pieces.push(head);
+                    fragments.extend(key.format(indent_level + 1));
+                    fragments.push(" => ".to_string());
+                    fragments.extend(value.format(indent_level + 1).into_iter().skip(1));
+                    fragments.push(",\n".to_string());
+                }
 
-        for child in &self.children {
-            pieces.extend(child.describe(indent_level + 1));
+                for lone_key in self.children.chunks_exact(2).remainder() {
+                    fragments.extend(lone_key.format(indent_level + 1));
+                    fragments.push(" => WARNING: NO ASSOCIATED VALUE,\n".to_string());
+                }
+            }
+
+            Tag => {
+                let child = self.children.last().expect("Tag with no child element");
+                fragments.extend(child.format(indent_level + 1));
+                fragments.push("\n".to_string());
+            }
+
+            _ => {
+                for child in self.children.iter() {
+                    fragments.extend(child.format(indent_level + 1));
+                }
+            }
         }
 
-        pieces.push(String::from("    ").repeat(indent_level));
-        pieces.push(tail);
+        fragments.push(tail);
 
-        pieces
+        fragments
     }
-    */
 
     fn cbor_from_bytes(bytes: &'a [u8], start: usize) -> Result<Self, ParseError> {
         if bytes.first().is_none() {
@@ -244,14 +269,6 @@ impl<'a> Cbor<'a> {
     }
 }
 
-/*
-impl<'a> std::fmt::Display for Cbor<'a> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.describe(0).join(""))
-    }
-}
-*/
-
 fn parse_big_endian(bytes: &[u8], size: usize) -> Result<usize, usize> {
     if size > bytes.len() {
         return Err(size - bytes.len());
@@ -266,13 +283,8 @@ fn parse_big_endian(bytes: &[u8], size: usize) -> Result<usize, usize> {
     Ok(result)
 }
 
-/*
-fn parse_float(bits: usize, byte_count: usize) -> f64 {
-    match byte_count {
-        2 => 0.0,
-        4 => 0.0,
-        8 => f64::from_bits(bits as u64),
-        e => panic!("Parse float with unsupported byte count: {}", e),
+impl<'a> std::fmt::Display for Cbor<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.format(0).join(""))
     }
 }
-*/
