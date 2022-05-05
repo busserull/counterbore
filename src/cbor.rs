@@ -288,3 +288,27 @@ impl<'a> std::fmt::Display for Cbor<'a> {
         write!(f, "{}", self.format(0).join(""))
     }
 }
+
+impl std::fmt::Display for ParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use ParseError::*;
+
+        match self {
+            TooManyBytes(count) => write!(f, "File has {} too many bytes", count),
+            TooFewBytes(start, count) => {
+                write!(f, "Element at offset {} is missing {} bytes", start, count)
+            }
+            ReservedAdditionalInfo(start, info) => write!(
+                f,
+                "Element at offset {} uses reserved additional info {}",
+                start, info
+            ),
+            IllegalIndefiniteLength(start) => write!(
+                f,
+                "Element at offset {} illegally specifies an indefinite length",
+                start
+            ),
+            BreakSymbol(start) => write!(f, "Unexpected break symbol at offest {}", start),
+        }
+    }
+}
